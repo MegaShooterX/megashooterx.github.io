@@ -1,0 +1,5 @@
+owner: MegaShooterX
+repo: megashooterx.github.io
+provider: github
+releaseType: release
+updaterCacheDirName: furniturecad-desktop-updater
