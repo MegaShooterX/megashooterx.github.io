@@ -392,6 +392,28 @@ export function buildIndex(system, cacheFolder) {
 	return index;
 }
 
+/**
+ * The pieces of a code this library does not have, taken from its family: those whose code starts as it does, but for
+ * its last words, the most of those words found in their names first. Colours count, sizes far less: of
+ * "con_per_bar_ver_3M_pre" the "pre" picks the black bar ("Barra 2M Versatile Preto") over the 3 m one in champagne.
+ */
+function kinOf(known, code) {
+	const words = lower(code).split('_');
+	for (let keep = words.length - 1; keep >= 3; keep--) {
+		const stem = `${words.slice(0, keep).join('_')}_`;
+		const kin = Object.keys(known.pieces).filter((each) => each.startsWith(stem) && known.pieces[each].length > 0);
+		if (kin.length === 0) continue;
+		const rest = words.slice(keep).filter((word) => word.length >= 2);
+		const score = (each) => {
+			const name = lower(known.pieces[each][0].name ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/);
+			return rest.reduce((sum, word) => sum + (name.some((part) => part.startsWith(word)) ? (/\d/.test(word) ? 0.1 : 1) : 0), 0);
+		};
+		const best = kin.sort((a, b) => score(b) - score(a) || a.localeCompare(b))[0];
+		return known.pieces[best];
+	}
+	return undefined;
+}
+
 const INDEX_VERSION = 2;
 
 // --- Answering the editor ---
@@ -442,7 +464,9 @@ export function createPromobLibrary({ cacheFolder, system: given } = {}) {
 		if (rest.startsWith('piece/')) {
 			const known = ready();
 			const code = rest.slice('piece/'.length);
-			const choices = known.pieces[lower(code)];
+			// Asked with `kin`, one this library does not have is taken from its family, as a library of another year
+			// names it: "con_per_bar_ver_3M_pre" (a Promob of 2024) is the black bar of the "con_per_bar_ver_…" here.
+			const choices = known.pieces[lower(code)] ?? (url.searchParams.get('kin') === '1' ? kinOf(known, code) : undefined);
 			if (!choices?.length) return json({ error: 'unknown piece' }, 404);
 			// What the project says tells which of the pieces of that code it is: the parts it names, and its size.
 			const asked = Object.fromEntries(

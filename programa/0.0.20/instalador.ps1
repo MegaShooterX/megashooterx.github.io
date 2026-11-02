@@ -100,8 +100,22 @@ function Step {
 Say ('instalando o programa ' + $env:PRAIAMOB_VERSAO + ' (' + $ExecutionContext.SessionState.LanguageMode + ')')
 if (-not $quiet) {
 	try {
+		# Its button on the bar of Windows is the program's, not PowerShell's (01/11/2026, his words: "no taskbar,
+		# apareceu o ícone do PS"): this process goes in the program's group, whose shortcuts give the mark, before any
+		# window of it shows; the window has the mark too, for where no shortcut of the program says it.
+		if ($env:PRAIAMOB_GRUPO) {
+			try {
+				Add-Type -Namespace PraiaMob -Name Barra -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string id);'
+				$null = [PraiaMob.Barra]::SetCurrentProcessExplicitAppUserModelID($env:PRAIAMOB_GRUPO)
+			} catch {}
+		}
 		Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 		$window = New-Object System.Windows.Window
+		if ($env:PRAIAMOB_ICONE) {
+			try {
+				$window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri $env:PRAIAMOB_ICONE), [System.Windows.Media.Imaging.BitmapCreateOptions]::None, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+			} catch {}
+		}
 		$window.WindowStyle = 'None'
 		$window.ResizeMode = 'NoResize'
 		$window.Width = 380

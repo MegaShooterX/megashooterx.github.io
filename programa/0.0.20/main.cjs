@@ -1711,6 +1711,13 @@ function installProgram(waiting, { reopen }) {
 	try {
 		const script = path.join(app.getPath('temp'), 'praiamob-instalador.ps1');
 		fs.copyFileSync(SCRIPT(INSTALLER), script);
+		// The mark for the screen of the install, beside the script: the install takes the program's own away.
+		let icon = path.join(app.getPath('temp'), 'praiamob-instalador.ico');
+		try {
+			fs.copyFileSync(ICON, icon);
+		} catch {
+			icon = null;
+		}
 		fs.mkdirSync(LOCAL, { recursive: true });
 		fs.rmSync(INSTALL_LOG(), { force: true });
 		if (reopen) fs.writeFileSync(REOPEN_AFTER(), '');
@@ -1725,6 +1732,9 @@ function installProgram(waiting, { reopen }) {
 			PRAIAMOB_TRAVA: INSTALL_LOCK(),
 			PRAIAMOB_REABRIR: REOPEN_AFTER(),
 			PRAIAMOB_DEPOIS: reopen ? 'Leva alguns instantes, e o PraiaMob abre de novo sozinho.' : 'Leva alguns instantes. Depois, é só abrir o PraiaMob.',
+			// Its button on the bar of Windows, the program's: its group and its mark (see `INSTALLER`).
+			PRAIAMOB_GRUPO: APP_ID,
+			...(icon && { PRAIAMOB_ICONE: icon }),
 			// A copy tried out opens again as it was started: in its own folder of work, out of sight.
 			...(triedOut && { PRAIAMOB_ARGUMENTOS: process.argv.filter((arg) => arg.startsWith('--')).map((arg) => `"${arg}"`).join(' ') }),
 			...(unseen && { PRAIAMOB_SEM_TELA: '1' })
