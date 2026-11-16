@@ -185,4 +185,16 @@ async function packFolder(folder, file) {
 	await writer.finish();
 }
 
-module.exports = { editorAt, closeEditor, buildOf, packWriter, packFolder, sumOf };
+/**
+ * Copies a folder entry by entry (Node's recursive copy gives up on paths with accents, as "Móveis"): for the program
+ * (main.cjs) and for the scripts that publish and rehearse it, which all read this file.
+ */
+function copyTree(from, to) {
+	fs.mkdirSync(to, { recursive: true });
+	for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+		if (entry.isDirectory()) copyTree(path.join(from, entry.name), path.join(to, entry.name));
+		else fs.copyFileSync(path.join(from, entry.name), path.join(to, entry.name));
+	}
+}
+
+module.exports = { editorAt, closeEditor, buildOf, packWriter, packFolder, sumOf, copyTree };

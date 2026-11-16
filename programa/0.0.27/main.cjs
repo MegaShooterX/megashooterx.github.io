@@ -12,7 +12,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { editorAt, closeEditor, buildOf, packWriter } = require('./pacote.cjs');
+const { editorAt, closeEditor, buildOf, packWriter, copyTree } = require('./pacote.cjs');
 
 // The files the program opens: its own, which is an archive Promob opens too; one of Promob's; and the text it saved before.
 const PROJECT_EXTENSIONS = ['.praiamob', '.promob', '.projx'];
@@ -30,17 +30,19 @@ const HOME = `${SCHEME}://editor/`;
 // Installed, the editor's files lie beside the program, or, newer, where the program fetched them since (see
 // `followSite`); run from source, beside this file.
 /**
- * Run from the Drive, the project keeps what is built in a folder of this computer outside it (see
- * `ferramentas/dependencias.mjs`, whose choice of folder this repeats): the editor the program shows and the lock of
- * its build are there. A copy with its own `node_modules` keeps them beside this file, as always.
+ * Run from the Drive, the project keeps what is built in a folder of this computer outside it: the editor the program
+ * shows and the lock of its build are there. Told by the rule every tool of the project goes by
+ * (`ferramentas/pastas.cjs`, read by `dependencias.mjs` too). A copy with its own packages keeps them beside this file,
+ * as always. Installed, the program has no such folder, and never looks.
  */
 const OUTSIDE = (() => {
-	if (app.isPackaged || fs.existsSync(path.join(__dirname, '..', 'node_modules'))) return null;
-	const deps =
-		process.env.PRAIAMOB_DEPS ||
-		['D:\\tools', 'C:\\tools'].filter((folder) => process.platform === 'win32' && fs.existsSync(folder)).map((folder) => path.join(folder, 'deps', 'PraiaMob'))[0] ||
-		path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), '.cache'), 'PraiaMob-deps');
-	return fs.existsSync(path.join(deps, 'node_modules')) ? path.join(deps, 'montado') : null;
+	if (app.isPackaged) return null;
+	try {
+		const pastas = require(path.join(__dirname, '..', 'ferramentas', 'pastas.cjs'));
+		return pastas.deFora() ? pastas.MONTADO : null;
+	} catch {
+		return null;
+	}
 })();
 // Installed, the editor is one file of the program (`resources/editor.pak`, see `pacote.cjs`); an installer of
 // before it had it as a folder of files (`resources/site`).
@@ -196,16 +198,7 @@ const LOCAL = smokeReport
 		? path.join(app.getPath('userData'), 'local')
 		: path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'PraiaMob');
 
-/** Copies a folder entry by entry (Node's recursive copy gives up on paths with accents, as "Móveis"). */
-function copyTree(from, to) {
-	fs.mkdirSync(to, { recursive: true });
-	for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-		if (entry.isDirectory()) copyTree(path.join(from, entry.name), path.join(to, entry.name));
-		else fs.copyFileSync(path.join(from, entry.name), path.join(to, entry.name));
-	}
-}
-
-/** Takes a file or a folder away entry by entry (as `copyTree`); what cannot be taken away now stays. */
+/** Takes a file or a folder away entry by entry (as `copyTree`, in `pacote.cjs`); what cannot be taken away now stays. */
 function removeTree(at) {
 	try {
 		if (fs.statSync(at).isDirectory()) {
@@ -671,6 +664,35 @@ function windowState(target = window) {
 }
 
 /**
+ * Keeps a page on the editor: whatever would take it elsewhere (a link followed, an address set, a file dropped on
+ * the window) leaves it where it is, and an address of the web opens in the computer's browser instead. The loads the
+ * program makes itself (`loadURL`, the reloads) are not asked about.
+ */
+function keepOnEditor(contents) {
+	contents.on('will-navigate', (event, url) => {
+		if (url.startsWith(HOME)) return;
+		event.preventDefault();
+		if (/^https?:/.test(url)) openOutside(url);
+	});
+}
+
+/**
+ * A page the editor writes itself and prints, opened blank (`window.open('', '_blank')`: the drawings of the walls,
+ * the production of the stone) in a window of its own with no menu. Given no preload, it has no bridge to the
+ * program; it opens nothing more, and goes nowhere but the editor.
+ */
+const printed = () => ({ action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true } });
+function guardPrinted(target) {
+	target.webContents.on('did-create-window', (child) => {
+		child.webContents.setWindowOpenHandler(({ url }) => {
+			if (/^https?:/.test(url)) openOutside(url);
+			return { action: 'deny' };
+		});
+		keepOnEditor(child.webContents);
+	});
+}
+
+/**
  * A render in a window of its own: its own process, so that the editor goes on answering while the machine works
  * at the picture, and its own place on the taskbar, moved, put down and closed by itself. Like the editor's, it has
  * no bar of the system: the page draws its own.
@@ -697,9 +719,12 @@ function openRenderWindow(address) {
 	render.on('maximize', state);
 	render.on('unmaximize', state);
 	render.webContents.setWindowOpenHandler(({ url }) => {
+		if (url === 'about:blank') return printed();
 		if (/^https?:/.test(url)) openOutside(url);
 		return { action: 'deny' };
 	});
+	guardPrinted(render);
+	keepOnEditor(render.webContents);
 	render.webContents.on('before-input-event', (_event, input) => {
 		if (devTools(input)) render.webContents.toggleDevTools();
 	});
@@ -710,9 +735,20 @@ function openRenderWindow(address) {
 /** When this program was started, to tell whether its own code was changed since. */
 const STARTED = Date.now();
 
-/** Whether the code of the program itself, not of the editor it shows, is newer than what is running. */
-function shellChanged() {
-	return ['main.cjs', 'preload.cjs', 'data-store.mjs'].some((file) => {
+/**
+ * Whether the code of the program itself, not of the editor it shows, is newer than what is running: any of its files,
+ * as the publishing lists them (`SHELL_FILES` in `scripts/programa-montado.mjs`). Asked only run from the code, where
+ * that list is.
+ */
+async function shellChanged() {
+	let files = ['main.cjs'];
+	try {
+		const { SHELL_FILES } = await import(pathToFileURL(path.join(__dirname, 'scripts', 'programa-montado.mjs')).href);
+		if (Array.isArray(SHELL_FILES)) files = SHELL_FILES;
+	} catch {
+		// Not read: this file, at least.
+	}
+	return files.some((file) => {
 		try {
 			return fs.statSync(path.join(__dirname, file)).mtimeMs > STARTED;
 		} catch {
@@ -895,6 +931,68 @@ function projectFrom(args) {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * The project files the program opened (see `projectFrom`; noted by the program that holds the lock, as it hands them
+ * to the editor), the only ones `desktop:save-file` writes over: a page made to write anywhere else on the computer
+ * finds nothing it may write. Kept in the program's local folder, the last ones opened, so that a tab the editor brings
+ * back from a run before saves into its file as it did. The first start that keeps them takes in the files of the tabs
+ * the editor kept from before (its stages, see `files.ts`), read as the program starts, before its page is there.
+ */
+const OPENED_FILES = () => path.join(LOCAL, 'abertos.json');
+const OPENED_KEPT = 500;
+/** A file as it is told apart from the others: on Windows, capitals or not, it is the same file. */
+const fileKey = (file) => (process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file));
+let openedFiles = null;
+
+function openedList() {
+	openedFiles ??= (async () => {
+		try {
+			const kept = JSON.parse(fs.readFileSync(OPENED_FILES(), 'utf8'));
+			if (Array.isArray(kept)) return new Set(kept.filter((each) => typeof each === 'string'));
+		} catch {
+			// Not kept yet: taken from the tabs kept before.
+		}
+		const found = new Set();
+		try {
+			const { chaves } = (await sharedData()).read();
+			for (const [key, text] of Object.entries(chaves)) {
+				if (key !== 'furniturecad.tabs' && !key.startsWith('praiamob.palco.')) continue;
+				try {
+					for (const each of JSON.parse(text)?.paths ?? []) if (typeof each === 'string' && projectKindOf(each) !== null) found.add(fileKey(each));
+				} catch {
+					// Not a list of tabs.
+				}
+			}
+		} catch {
+			// Nothing kept to read.
+		}
+		keepOpened(found);
+		return found;
+	})();
+	return openedFiles;
+}
+
+function keepOpened(files) {
+	try {
+		while (files.size > OPENED_KEPT) files.delete(files.values().next().value);
+		fs.mkdirSync(LOCAL, { recursive: true });
+		fs.writeFileSync(OPENED_FILES(), JSON.stringify([...files]));
+	} catch {
+		// Not kept: this start still knows them.
+	}
+}
+
+/** Notes a project file the program opened, as the last one: not the copy Promob keeps, which is never written over. */
+function noteOpened(file) {
+	if (typeof file !== 'string' || projectKindOf(file) === null) return;
+	void openedList().then((files) => {
+		const key = fileKey(file);
+		files.delete(key);
+		files.add(key);
+		keepOpened(files);
+	});
 }
 
 /** The project the program was started to open, handed to the editor once it asks. */
@@ -1138,21 +1236,57 @@ function after(version, other) {
 /**
  * Where the versions fetched that did not come up are listed, each with when: one is never shown again as it was
  * fetched, and for a while not fetched at all; then it is fetched again whole (it may have been the copy that was
- * broken, or the machine too busy that once), so that no failure leaves a program behind the site for good.
+ * broken, or the machine too busy that once), so that no failure leaves a program behind the site for good. Always in
+ * the program's local folder: kept in the folder editors are fetched into until 14/11/2026, which may change between
+ * starts (see `FETCHED`), the list changed with it.
  */
-const FAILED = () => path.join(FETCHED(), 'falhou.json');
+const FAILED = () => path.join(LOCAL, 'editor', 'falhou.json');
+/** Where the list was kept before, beside the install, when that folder could be written: read once into `FAILED`. */
+const FAILED_BEFORE = () => path.join(process.resourcesPath, 'editor', 'falhou.json');
 /** How long a version that did not come up waits before it is fetched again, whole, for another chance. */
 const FAILED_FOR = 6 * 60 * 60 * 1000;
 
-function failedList() {
+/** The list in a file. */
+function failedIn(file) {
 	try {
-		const listed = JSON.parse(fs.readFileSync(FAILED(), 'utf8'));
+		const listed = JSON.parse(fs.readFileSync(file, 'utf8'));
 		// The programs of before listed bare numbers: as failed long ago.
 		if (!Array.isArray(listed)) return [];
 		return listed.map((each) => (typeof each === 'string' ? { versao: each, em: 0 } : each)).filter((each) => typeof each?.versao === 'string');
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * The list kept beside the install before (`FAILED_BEFORE`), brought into the local one once, and taken away. Read only
+ * when it is newer than the local one: one that could not be taken away is never read again over what was cleared since.
+ */
+let failedMoved = false;
+function moveFailed() {
+	if (failedMoved || !app.isPackaged) return;
+	failedMoved = true;
+	try {
+		const before = fs.statSync(FAILED_BEFORE()).mtimeMs;
+		let now = 0;
+		try {
+			now = fs.statSync(FAILED()).mtimeMs;
+		} catch {
+			// No local list yet.
+		}
+		if (before > now) {
+			const here = failedIn(FAILED());
+			if (!keepFailed([...here, ...failedIn(FAILED_BEFORE()).filter((each) => !here.some((one) => one.versao === each.versao))])) return;
+		}
+		fs.rmSync(FAILED_BEFORE(), { force: true });
+	} catch {
+		// None there, or not taken away: read no more in this start.
+	}
+}
+
+function failedList() {
+	moveFailed();
+	return failedIn(FAILED());
 }
 
 /** The versions that did not come up lately: neither shown nor fetched. */
@@ -1167,11 +1301,15 @@ function failedVersions() {
 /** Whether a version did not come up, and was not fetched again since: the copy there is not shown. */
 const everFailed = (version) => failedList().some((each) => each.versao === version);
 
+/** Writes the list; says whether it was written. */
 function keepFailed(list) {
 	try {
+		fs.mkdirSync(path.dirname(FAILED()), { recursive: true });
 		fs.writeFileSync(FAILED(), JSON.stringify(list));
+		return true;
 	} catch {
 		// Not kept: the version is tried again at the next start, and put aside again.
+		return false;
 	}
 }
 
@@ -1222,9 +1360,9 @@ function newestSite() {
 			bestAt = at;
 		}
 	}
-	// The others go, a little later; never the one being fetched by then.
+	// The others go, a little later, as any editor let go (see `letGo`): never one shown, waiting or being fetched by then.
 	for (const place of found) {
-		if (place !== best) setTimeout(() => place !== downloading && removeTree(place), 5000);
+		if (place !== best) letGo(place);
 	}
 	return best;
 }
@@ -1262,8 +1400,9 @@ const down = () => downFor >= TRIAL_FOR;
 function letGo(place) {
 	if (!place || place === INSTALLED_SITE) return;
 	setTimeout(() => {
-		// Shown again, waiting again, or being fetched again under its name (its `.baixando`): kept.
-		if (place === SITE || place === fetchedSite?.folder || downloading === `${place}.baixando`) return;
+		// Shown again, waiting again, or being fetched again under its name (its `.baixando`, or itself the `.baixando` of
+		// a fetch cut short before, whose name a fetch since took up again): kept.
+		if (place === SITE || place === fetchedSite?.folder || downloading === place || downloading === `${place}.baixando`) return;
 		closeEditor(place);
 		removeTree(place);
 	}, 10_000);
@@ -1929,8 +2068,9 @@ function followReleases() {
 	if (fs.existsSync(told)) updater.updateConfigPath = told;
 	// The program itself changes seldom, and is not what Novidades shows (that is the editor, see `followSite`): the
 	// updater fetches it in the background, and the program installs it (see `INSTALLER`), not the updater, so that
-	// it is known how each install went.
-	updater.autoDownload = true;
+	// it is known how each install went. Fetched when the program says so (see `update-available`), never left to how
+	// the updater orders its own steps.
+	updater.autoDownload = false;
 	updater.autoInstallOnAppQuit = false;
 	// Only a program numbered higher than this one is taken: every one is published under a number above all the
 	// ones before it (`programNumber` in publicar.mjs, from 0.15.0 on, above the copies numbered from 0.4 too), so a
@@ -1954,8 +2094,12 @@ function followReleases() {
 	let held = false;
 	updater.on('update-available', (info) => {
 		const waiting = waitingProgram();
-		updater.autoDownload = waiting?.versao !== info.version || stillWaiting(waiting) || lately(waiting).length < FETCHES;
-		if (updater.autoDownload || held) return;
+		if (waiting?.versao !== info.version || stillWaiting(waiting) || lately(waiting).length < FETCHES) {
+			// A failure is said by the updater's own `error`, reported below.
+			void updater.downloadUpdate().catch(() => {});
+			return;
+		}
+		if (held) return;
 		held = true;
 		report('erro', 'O programa novo some depois de baixado: baixado de novo só amanhã', { versao: info.version, vezes: lately(waiting).length });
 	});
@@ -2225,12 +2369,16 @@ function openWindow(updating = null, firstPage = updatingPage) {
 		if (named.endsWith(NAME)) page = named;
 		title();
 	});
-	// The editor is the whole program: links that lead elsewhere open in the system's browser.
+	// The editor is the whole program: links that lead elsewhere open in the system's browser; a page it prints, in a
+	// window of its own (see `printed`).
 	window.webContents.setWindowOpenHandler(({ url }) => {
+		if (url === 'about:blank') return printed();
 		if (/^https?:/.test(url)) openOutside(url);
 		else if (url.startsWith(`${HOME}render`)) openRenderWindow(url);
 		return { action: 'deny' };
 	});
+	guardPrinted(window);
+	keepOnEditor(window.webContents);
 	// For whoever is helping a user find out what went wrong.
 	window.webContents.on('before-input-event', (_event, input) => {
 		if (devTools(input)) window.webContents.toggleDevTools();
@@ -2240,6 +2388,10 @@ function openWindow(updating = null, firstPage = updatingPage) {
 		// window says so while it is made or fetched, and then shows the editor as it is now, not as it was. Nothing
 		// is being worked on yet that a reload could lose.
 		starting = true;
+		// What was said before the page of the start was there to take it, said again once it is.
+		window.webContents.on('did-finish-load', () => {
+			if (starting) sayAtStart({});
+		});
 		void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(firstPage())}`);
 		void updating
 			.catch(() => {})
@@ -2303,10 +2455,13 @@ if (!app.requestSingleInstanceLock()) {
 } else {
 	// Holding the program: a start of the code fetched on trial is counted (see `carregador.cjs`).
 	global.praiamobPrograma?.comecou?.();
+	// The project it was started to open is one it may save into (see `openedList`).
+	noteOpened(launched?.path);
 	// A project double-clicked while the program is open goes to the window that is already there; so does an
 	// account handed by the site.
 	app.on('second-instance', (_event, args) => {
 		const project = projectFrom(args.slice(1));
+		noteOpened(project?.path);
 		const account = signInFrom(args.slice(1));
 		// Started a second time before its window is there: they wait for the editor to ask for them.
 		if (!window) {
@@ -2338,11 +2493,13 @@ if (!app.requestSingleInstanceLock()) {
 		return project;
 	});
 	// Saving a project that was opened by double click writes it back where it was opened from.
-	// Only a project file that is there is written over; anywhere else is asked for in the editor.
+	// Only a project file the program opened (see `openedList`) and that is there is written over; anywhere else is
+	// asked for in the editor.
 	// It is written beside itself first and then put in its place, so that a write cut short leaves the file whole.
-	ipcMain.handle('desktop:save-file', (_event, file, data) => {
+	ipcMain.handle('desktop:save-file', async (_event, file, data) => {
 		if (typeof file !== 'string' || !(typeof data === 'string' || data instanceof Uint8Array)) return false;
 		if (!path.isAbsolute(file) || projectKindOf(file) === null || !fs.existsSync(file)) return false;
+		if (!(await openedList()).has(fileKey(file))) return false;
 		const beside = `${file}.salvando`;
 		try {
 			if (typeof data === 'string') fs.writeFileSync(beside, data, 'utf8');
@@ -2361,14 +2518,14 @@ if (!app.requestSingleInstanceLock()) {
 	// Asked for by the editor, from the update by the cloud, once a newer build is ready: the program starts again
 	// where it was. Only the editor is loaded anew, which is quick and keeps the window; a program whose own code
 	// changed is started again whole. The projects, the windows open over them and the camera come back as they were.
-	ipcMain.on('desktop:reload', () => {
+	ipcMain.on('desktop:reload', async () => {
 		// Installed: the editor fetched is all there already, and is only loaded; the program itself, if a newer one
 		// was fetched, is installed when it is closed.
 		if (fetchedSite) {
 			showFetched();
 			return;
 		}
-		if (!app.isPackaged && shellChanged()) {
+		if (!app.isPackaged && (await shellChanged())) {
 			app.relaunch();
 			app.exit(0);
 		} else window?.webContents.reloadIgnoringCache();
@@ -2455,6 +2612,8 @@ if (!app.requestSingleInstanceLock()) {
 			return;
 		}
 		reportLastInstall();
+		// The project files it may save into, read before the editor's page is there (see `openedList`).
+		void openedList();
 		// The editor has its own bars and menus.
 		Menu.setApplicationMenu(null);
 		serveEditor();

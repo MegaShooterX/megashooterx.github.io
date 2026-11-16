@@ -72,6 +72,9 @@ function makeFolder(folder) {
 /**
  * Writes a file whole: beside itself first, then put in its place, so that a
  * write cut short, or read halfway by another window, never leaves half a file.
+ * Held past every try, it is not written at all, never in its place halfway: the
+ * write fails, and is made again (the editor tries its changes again a moment
+ * later, see `storage.ts`).
  */
 function writeWhole(file, data) {
 	const beside = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.novo`;
@@ -86,13 +89,8 @@ function writeWhole(file, data) {
 				pause(25 * (attempt + 1));
 				continue;
 			}
-			try {
-				fs.writeFileSync(file, data);
-			} finally {
-				fs.rmSync(beside, { force: true });
-			}
-			if (error && !fs.existsSync(file)) throw error;
-			return;
+			fs.rmSync(beside, { force: true });
+			throw error;
 		}
 	}
 }
@@ -120,11 +118,11 @@ export function createDataStore(folder = defaultDataFolder()) {
 	/**
 	 * Puts what a file holds now in its history, before it is written over or taken away: unless it is what the last
 	 * version kept already holds, or, for what is written again every few seconds, one was kept a moment ago. The
-	 * oldest go once there are more than `most`.
+	 * oldest go once there are more than `most`. `held`, what the file holds, when the caller has read it already.
 	 */
-	function keepAside(file, name, key, most) {
+	function keepAside(file, name, key, most, held = null) {
 		try {
-			if (!fs.existsSync(file)) return;
+			if (!held && !fs.existsSync(file)) return;
 			const place = path.join(history, name);
 			makeFolder(place);
 			const extension = path.extname(file);
@@ -132,13 +130,11 @@ export function createDataStore(folder = defaultDataFolder()) {
 				.readdirSync(place)
 				.filter((each) => each.endsWith(extension))
 				.sort((a, b) => Number(a.slice(0, -extension.length)) - Number(b.slice(0, -extension.length)));
-			const now = fs.readFileSync(file);
 			const last = versions.at(-1);
-			if (last) {
-				const lastAt = Number(last.slice(0, -extension.length));
-				if (OFTEN.test(key) && Date.now() - lastAt < OFTEN_EVERY) return;
-				if (fs.readFileSync(path.join(place, last)).equals(now)) return;
-			}
+			// Written again every few seconds, and one kept a moment ago: nothing is read.
+			if (last && OFTEN.test(key) && Date.now() - Number(last.slice(0, -extension.length)) < OFTEN_EVERY) return;
+			const now = held ?? fs.readFileSync(file);
+			if (last && fs.readFileSync(path.join(place, last)).equals(now)) return;
 			writeWhole(path.join(place, `${Math.round(fs.statSync(file).mtimeMs)}${extension}`), now);
 			for (const old of versions.slice(0, Math.max(0, versions.length + 1 - most))) fs.rmSync(path.join(place, old), { force: true });
 		} catch {
@@ -205,13 +201,16 @@ export function createDataStore(folder = defaultDataFolder()) {
 				const name = fileNameOf(key);
 				const file = path.join(keys, `${name}.txt`);
 				if (text !== null && typeof text !== 'string') continue;
-				// Written again as it is, it is not written: nothing changes, and no earlier version is needed.
+				// What it holds now, read once. Written again as it is, it is not written: nothing changes, and no earlier
+				// version is needed; else that is what its history keeps.
+				let before = null;
 				try {
-					if (text !== null && fs.readFileSync(file, 'utf8') === text) continue;
+					before = fs.readFileSync(file);
 				} catch {
 					// Not there yet.
 				}
-				keepAside(file, name, key, HISTORY_KEPT);
+				if (text !== null && before !== null && before.toString('utf8') === text) continue;
+				if (before !== null) keepAside(file, name, key, HISTORY_KEPT, before);
 				if (text === null) fs.rmSync(file, { force: true });
 				else writeWhole(file, text);
 			}
@@ -290,6 +289,10 @@ export function answerData(store, request, response, releaseFile) {
 	};
 	const run = async () => {
 		const method = request.method ?? 'GET';
+		// Only the editor's own pages change what is kept: a page of another address, which the browser lets send a form,
+		// or text, here without asking, is refused. What no browser sends (a script, a test) says nothing of where it is.
+		const from = request.headers?.['sec-fetch-site'];
+		if (method !== 'GET' && from !== undefined && from !== 'same-origin') return send(403, '');
 		if (address.pathname === '/_dados' && method === 'GET') return json({ praiamob: 1, ...store.read(), versao: version() });
 		if (address.pathname === '/_dados/estado') return json({ ...store.state(), versao: version() });
 		if (address.pathname === '/_dados' && method === 'POST') {
