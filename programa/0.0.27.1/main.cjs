@@ -165,6 +165,12 @@ const smokeReport = process.argv.find((arg) => arg.startsWith('--smoke='))?.slic
 /** A copy started to be tried out that never shows its window, so as never to come in front of what is open (`--sem-janela`). */
 const unseen = process.argv.includes('--sem-janela');
 /**
+ * A hidden copy that draws as a window shown does (`--sem-janela --fora-da-tela`): off the screen, at the pace of one
+ * shown. A window never shown draws about once a second whatever its page asks, so that the check of how the picture
+ * follows the camera (`ensaio-quadros.mjs`) could tell nothing from it.
+ */
+const offScreen = unseen && process.argv.includes('--fora-da-tela');
+/**
  * Installed from the Microsoft Store (`npm run loja`): the Store installs, updates and takes the program away, keeps its
  * shortcuts and names it on the bar, so none of the program's own installer, updates of itself or mending of shortcuts
  * runs. The editor still comes from the site, as in every copy (see `followSite`).
@@ -2196,6 +2202,23 @@ function shellsFetched() {
 	return found;
 }
 
+/** How long a code of the program that did not run stays aside, neither run nor fetched again (`FAILED_FOR` in `carregador.cjs`). */
+const SHELL_ASIDE_FOR = 6 * 60 * 60 * 1000;
+
+/**
+ * Whether a code of the program newer than the one running was fetched (see `followShell`), for this engine and this
+ * start, and is not put aside: the one the next start runs (see `carregador.cjs`).
+ */
+function shellWaiting() {
+	const own = global.praiamobPrograma;
+	// From the Store, the start runs only the code that came in the package (see `carregador.cjs`).
+	if (STORE || typeof own?.versao !== 'string') return false;
+	const aside = shellsFailed()
+		.filter((each) => Math.abs(Date.now() - (Number(each.em) || 0)) < SHELL_ASIDE_FOR)
+		.map((each) => each.versao);
+	return shellsFetched().some((each) => each.fits && each.versao && !aside.includes(each.versao) && after(each.versao, own.versao));
+}
+
 /** The folder being fetched now (`.baixando`): never taken away from under its fetch. */
 let fetchingShell = null;
 
@@ -2222,7 +2245,7 @@ function followShell() {
 			const told = JSON.parse((await fetchBytes(`${SITE_ADDRESS}programa/versao.json?t=${Date.now()}`)).toString('utf8'));
 			if (typeof told.versao !== 'string' || !Array.isArray(told.files) || told.files.length === 0) return;
 			if (told.electron !== process.versions.electron || told.carregador !== own.carregador) return;
-			const aside = shellsFailed().some((each) => each.versao === told.versao && Math.abs(Date.now() - (Number(each.em) || 0)) < 6 * 60 * 60 * 1000);
+			const aside = shellsFailed().some((each) => each.versao === told.versao && Math.abs(Date.now() - (Number(each.em) || 0)) < SHELL_ASIDE_FOR);
 			const newest = shellsFetched()
 				.filter((each) => each.fits && each.versao)
 				.reduce((best, each) => (after(each.versao, best) ? each.versao : best), own.versao);
@@ -2328,7 +2351,7 @@ function openWindow(updating = null, firstPage = updatingPage) {
 		// No bar of the system over the window: the editor draws its own, with the menus in it
 		// and the buttons that put the window down, make it fill the screen and close it.
 		frame: false,
-		webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false }
+		webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, ...(offScreen && { offscreen: true }) }
 	});
 	nameOnTaskbar(window);
 	window.once('ready-to-show', () => {
@@ -2517,18 +2540,25 @@ if (!app.requestSingleInstanceLock()) {
 	});
 	// Asked for by the editor, from the update by the cloud, once a newer build is ready: the program starts again
 	// where it was. Only the editor is loaded anew, which is quick and keeps the window; a program whose own code
-	// changed is started again whole. The projects, the windows open over them and the camera come back as they were.
+	// changed too (fetched from the site since it started, or changed in the folder it runs from) is started again
+	// whole, and that start takes the newest code and the newest editor there. It is closed as by its own button, so
+	// that nothing is cut short, and started again with the same switches but not the file it was opened with, which
+	// its tabs have already. The editor let its tabs go before asking (see `release.svelte.ts`), for the window opened
+	// next to take them up at once. The projects and the camera come back as they were.
+	// (16/11/2026: Usar agora brought the editor of 0.0.27 and left the program on its code of 0.0.24 until it was
+	// opened again, which it was not: "não baixou a atualização".)
 	ipcMain.on('desktop:reload', async () => {
-		// Installed: the editor fetched is all there already, and is only loaded; the program itself, if a newer one
-		// was fetched, is installed when it is closed.
+		if (app.isPackaged ? shellWaiting() : await shellChanged()) {
+			app.relaunch(app.isPackaged ? { args: process.argv.slice(1).filter((arg) => arg.startsWith('--')) } : undefined);
+			app.quit();
+			return;
+		}
+		// Installed: the editor fetched is all there already, and is only loaded.
 		if (fetchedSite) {
 			showFetched();
 			return;
 		}
-		if (!app.isPackaged && (await shellChanged())) {
-			app.relaunch();
-			app.exit(0);
-		} else window?.webContents.reloadIgnoringCache();
+		window?.webContents.reloadIgnoringCache();
 	});
 	// The buttons of the bar a window draws: the editor's, or a render's.
 	ipcMain.on('desktop:window', (event, what) => {
