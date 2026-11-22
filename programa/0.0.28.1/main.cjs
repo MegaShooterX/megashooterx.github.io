@@ -649,17 +649,17 @@ function announcedNote() {
 	}
 }
 
-/** What the window shows while the version it was started with is built: that it is, and what is new in it. */
+/**
+ * What the window shows while the version it was started with is built: that it is, and nothing more. What is new in
+ * it is never put on the screen: a long list nobody had time to read only spoilt the page (22/11/2026).
+ */
 function updatingPage() {
-	const escaped = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-	const note = escaped(announcedNote());
 	return [
 		'<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>PraiaMob</title>',
 		'<style>html,body{height:100%;margin:0}body{display:flex;align-items:center;justify-content:center;background:#16191e;color:#e3e7ee;',
 		'font:14px/1.5 "Segoe UI",system-ui,sans-serif;-webkit-app-region:drag;user-select:none}div{max-width:520px;padding:0 24px;text-align:center}',
-		'h1{margin:0 0 8px;font-size:18px;font-weight:600}p{margin:0;color:#8d96a3}em{display:block;margin-top:14px;font-style:normal;color:#5b8cf0}</style>',
+		'h1{margin:0 0 8px;font-size:18px;font-weight:600}p{margin:0;color:#8d96a3}</style>',
 		'</head><body><div><h1>Atualizando o PraiaMob…</h1><p>A versão nova está sendo montada. O programa abre sozinho quando terminar.</p>',
-		note ? `<em>${note}</em>` : '',
 		'</div></body></html>'
 	].join('');
 }
@@ -1733,7 +1733,7 @@ function followSite() {
 			}
 			asked = Date.now();
 			if (typeof build?.version !== 'string' || !after(build.version, versionIn(SITE)) || failedVersions().includes(build.version)) return;
-			sayAtStart({ titulo: 'Atualizando o PraiaMob', texto: `Baixando a versão ${build.version}: só o que mudou.`, nota: typeof build.note === 'string' ? build.note : '', parte: 0.02 });
+			sayAtStart({ titulo: 'Atualizando o PraiaMob', texto: `Baixando a versão ${build.version}.`, parte: 0.02 });
 			const progress = setInterval(() => sayAtStart({ parte: update.progress }), 400);
 			try {
 				await Promise.race([look(), new Promise((resolve) => setTimeout(resolve, START_FETCH))]);
@@ -1770,12 +1770,12 @@ function startPage() {
 		'<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>PraiaMob</title>',
 		'<style>html,body{height:100%;margin:0}body{display:flex;align-items:center;justify-content:center;background:#16191e;color:#e3e7ee;',
 		'font:14px/1.5 "Segoe UI",system-ui,sans-serif;-webkit-app-region:drag;user-select:none}div{max-width:520px;padding:0 24px;text-align:center}',
-		'h1{margin:0 0 8px;font-size:18px;font-weight:600}p{margin:0;color:#8d96a3}em{display:block;margin-top:14px;font-style:normal;color:#5b8cf0}',
+		'h1{margin:0 0 8px;font-size:18px;font-weight:600}p{margin:0;color:#8d96a3}',
 		'.bar{visibility:hidden;width:260px;height:4px;margin:18px auto 0;overflow:hidden;border-radius:2px;background:#2a2f37}',
 		'.bar i{display:block;width:2%;height:100%;border-radius:2px;background:#5b8cf0;transition:width .4s ease}</style>',
-		'</head><body><div><h1 id="t"></h1><p id="s"></p><em id="n"></em><div class="bar" id="b"><i></i></div></div>',
+		'</head><body><div><h1 id="t"></h1><p id="s"></p><div class="bar" id="b"><i></i></div></div>',
 		'<script>window.diz=function(d){if(d.titulo!==undefined)t.textContent=d.titulo;if(d.texto!==undefined)s.textContent=d.texto;',
-		'if(d.nota!==undefined)n.textContent=d.nota;if(d.parte!==undefined){b.style.visibility="visible";',
+		'if(d.parte!==undefined){b.style.visibility="visible";',
 		'b.firstChild.style.width=Math.max(2,Math.round(d.parte*100))+"%"}}</script></body></html>'
 	].join('');
 }
@@ -2084,7 +2084,7 @@ async function installAtStart() {
 		return false;
 	}
 	if ((Number(waiting.tentativas) || 0) >= START_TRIES) return false;
-	const say = { titulo: 'Atualizando o PraiaMob', texto: 'Instalando a versão nova do programa.', nota: '' };
+	const say = { titulo: 'Atualizando o PraiaMob', texto: 'Instalando a versão nova do programa.' };
 	sayAtStart(say);
 	if (!(await wholeInstaller(waiting))) {
 		// Fetched again by the updater, which checks it too; the note stays, as above, as not to be installed.
